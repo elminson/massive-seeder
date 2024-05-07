@@ -2,63 +2,63 @@
 
 namespace Elminson\MassiveSeeder;
 
+use Faker\Factory as Faker;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
-use Faker\Factory as Faker;
 
 class MassiveSeederCommand extends Command
 {
-	/**
-	 * The name and signature of the console command.
-	 *
-	 * @var string
-	 */
-	protected $signature = 'db:massive-seed';
+    /**
+     * The name and signature of the console command.
+     *
+     * @var string
+     */
+    protected $signature = 'db:massive-seed';
 
-	/**
-	 * The console command description.
-	 *
-	 * @var string
-	 */
-	protected $description = 'Seed a database table with massive data';
+    /**
+     * The console command description.
+     *
+     * @var string
+     */
+    protected $description = 'Seed a database table with massive data';
 
-	/**
-	 * Execute the console command.
-	 *
-	 * @return int
-	 */
-	public function handle()
-	{
-		$connection = $this->ask('What connection do you want to use?');
-		$table = $this->ask('What table do you want to seed?');
+    /**
+     * Execute the console command.
+     *
+     * @return int
+     */
+    public function handle()
+    {
+        $connection = $this->ask('What connection do you want to use?');
+        $table = $this->ask('What table do you want to seed?');
 
-		$columns = DB::connection($connection)->getSchemaBuilder()->getColumnListing($table);
+        $columns = DB::connection($connection)->getSchemaBuilder()->getColumnListing($table);
 
-		$faker = Faker::create();
+        $faker = Faker::create();
 
-		$data = [];
+        $data = [];
 
-		foreach ($columns as $column) {
-			// You can add more cases for different column types
-			switch ($column) {
-				case 'name':
-					$data[$column] = $faker->name;
-					break;
-				case 'email':
-					$data[$column] = $faker->email;
-					break;
-				case 'address':
-					$data[$column] = $faker->address;
-					break;
-				default:
-					$data[$column] = $faker->word;
-			}
-		}
+        foreach ($columns as $column) {
+            // You can add more cases for different column types
+            switch ($column) {
+                case 'name':
+                    $data[$column] = $faker->name;
+                    break;
+                case 'email':
+                    $data[$column] = $faker->email;
+                    break;
+                case 'address':
+                    $data[$column] = $faker->address;
+                    break;
+                default:
+                    $data[$column] = $faker->word;
+            }
+        }
 
-		DB::connection($connection)->table($table)->insert($data);
+        DB::connection($connection)->table($table)->insert($data);
 
-		$this->info('Data seeded successfully!');
+        $this->info('Data seeded successfully!');
 
-		return 0; // 0 means command was successful
-	}
+        return 0; // 0 means command was successful
+    }
 }
