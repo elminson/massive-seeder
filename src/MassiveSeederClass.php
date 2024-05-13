@@ -5,60 +5,191 @@ namespace Elminson\MassiveSeeder;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 use Faker\Factory as Faker;
+use function Laravel\Prompts\select;
+use function Laravel\Prompts\text;
 
 class MassiveSeederCommand extends Command
 {
-	/**
-	 * The name and signature of the console command.
-	 *
-	 * @var string
-	 */
-	protected $signature = 'db:massive-seed';
+	const SUPPORTED_DRIVERS = ['mysql', 'sqlite', 'pgsql'];
 
-	/**
-	 * The console command description.
-	 *
-	 * @var string
-	 */
+	protected $signature = 'db:massive-seeder';
+
 	protected $description = 'Seed a database table with massive data';
+	private $values = [];
 
-	/**
-	 * Execute the console command.
-	 *
-	 * @return int
-	 */
 	public function handle()
 	{
-		$connection = $this->ask('What connection do you want to use?');
-		$table = $this->ask('What table do you want to seed?');
+		if (app()->environment() !== 'production') {
+			$this->error('You are running this command in the production environment.');
 
-		$columns = DB::connection($connection)->getSchemaBuilder()->getColumnListing($table);
-
-		$faker = Faker::create();
-
-		$data = [];
-
-		foreach ($columns as $column) {
-			// You can add more cases for different column types
-			switch ($column) {
-				case 'name':
-					$data[$column] = $faker->name;
-					break;
-				case 'email':
-					$data[$column] = $faker->email;
-					break;
-				case 'address':
-					$data[$column] = $faker->address;
-					break;
-				default:
-					$data[$column] = $faker->word;
+			if (!$this->confirm('Do you wish to continue?')) {
+				$this->info('Exiting...');
+				return 0;
 			}
 		}
 
-		DB::connection($connection)->table($table)->insert($data);
+		$connections = array_keys(config('database.connections'));
+		$connections = array_filter($connections, function ($connection) {
+			return in_array(config("database.connections.$connection.driver"), self::SUPPORTED_DRIVERS);
+		});
 
+		$connection = select(
+			'Select the connection to use.',
+			array_values($connections)
+		);
+
+		$this->info('You selected: ' . $connection);
+		if (!in_array(config("database.connections.$connection.driver"), self::SUPPORTED_DRIVERS)) {
+			$this->error($connection . ' is not supported for this command.');
+			return 1;
+		}
+
+		try {
+			match (config("database.connections.$connection.driver")) {
+				'mysql' => $tables = $this->allTablesMySQL($connection),
+				'sqlite' => $tables = $this->allTablesSqlite($connection),
+				'pgsql' => $tables = $this->allTablesPgsql($connection),
+			};
+		} catch (\Exception $e) {
+			$this->error('An error occurred while fetching the tables: ' . $e->getMessage());
+			return 1;
+		}
+
+		if (empty($tables)) {
+			$this->error('No tables found in the selected connection.');
+			return 1;
+		}
+
+		$table = select(
+			'Select the table to seed.',
+			$tables
+		);
+
+		$this->info('You selected: ' . $table . ' table');
+
+		$batchSize = 1000;
+		$totalRecords = text(
+			label: 'How many records do you want to insert? (max: 1,000,000)',
+			validate: ['name' => 'required|max:1000000|integer'],
+		);
+
+		$iterations = intdiv($totalRecords, $batchSize);
+		$columnsAndTypes = $this->getColumnsAndTypes($connection, $table);
+		$faker = Faker::create();
+		$bar = $this->output->createProgressBar($iterations);
+
+		for ($i = 0; $i < $iterations; $i++) {
+			foreach ($this->generateDataBatch($batchSize, $columnsAndTypes, $faker) as $data) {
+				DB::connection($connection)->table($table)->insert($data);
+			}
+			$bar->advance();
+		}
+
+		$bar->finish();
+		$this->line('');
+		$this->info('Total Records Inserted: ' . number_format($totalRecords, 0, '', ','));
 		$this->info('Data seeded successfully!');
 
-		return 0; // 0 means command was successful
+		return 0;
+	}
+
+	public static function allTablesMySQL($connection = null)
+	{
+		$tablesData = collect(DB::connection($connection)->select('show tables'));
+		$tables = [];
+		foreach ($tablesData as $table) {
+			$tables[] = $table->tablename;
+		}
+
+		return $tables;
+	}
+
+	public static function allTablesSqlite($connection = null)
+	{
+		$tablesData = collect(DB::connection($connection)->select("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"));
+		$tables = [];
+		foreach ($tablesData as $table) {
+			$tables[] = $table->tablename;
+		}
+
+		return $tables;
+	}
+
+	public static function allTablesPgsql($connection = null)
+	{
+		$tablesData = collect(DB::connection($connection)->select("SELECT * FROM pg_catalog.pg_tables WHERE schemaname='public'"));
+		$tables = [];
+		foreach ($tablesData as $table) {
+			$tables[] = $table->tablename;
+		}
+
+		return $tables;
+	}
+
+	private function generateDataBatch($batchSize, $columns, $faker)
+	{
+		for ($j = 0; $j < $batchSize; $j++) {
+			$data = [];
+
+			foreach ($columns as $column => $type) {
+				switch ($type) {
+					case 'name':
+						$data[$column] = $faker->name;
+						break;
+					case 'email':
+						$data[$column] = $faker->email;
+						break;
+					case 'address':
+						$data[$column] = $faker->address;
+						break;
+					case 'integer':
+					case 'int4':
+					case 'float4':
+						$data[$column] = $faker->randomNumber();
+						break;
+					case 'timestamp':
+						$data[$column] = $faker->dateTimeThisYear()->format('Y-m-d H:i:s');
+						break;
+					case 'varchar':
+						$data[$column] = $faker->word;
+						break;
+					case 'text':
+						$data[$column] = $faker->text;
+						break;
+					case 'bool':
+						$data[$column] = $faker->boolean;
+						break;
+					default:
+						$data[$column] = $faker->word;
+				}
+			}
+
+			yield $data;
+		}
+	}
+
+	public function getColumnsAndTypes($connection, $table)
+	{
+		$columns = DB::connection($connection)->getSchemaBuilder()->getColumnListing($table);
+		$columnsWithTypes = [];
+
+		foreach ($columns as $column) {
+			$type = DB::connection($connection)->getSchemaBuilder()->getColumnType($table, $column);
+			$columnsWithTypes[$column] = $type;
+		}
+
+		return $columnsWithTypes;
+	}
+
+	private function displayMemoryUsage()
+	{
+		$memoryUsage = memory_get_usage(true);
+		if ($memoryUsage < 1024) {
+			return 'Memory usage: ' . $memoryUsage . ' bytes';
+		} elseif ($memoryUsage < 1048576) {
+			return 'Memory usage: ' . round($memoryUsage / 1024, 2) . ' KB';
+		} else {
+			return 'Memory usage: ' . round($memoryUsage / 1048576, 2) . ' MB';
+		}
 	}
 }
