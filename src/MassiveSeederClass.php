@@ -5,8 +5,12 @@ namespace Elminson\MassiveSeeder;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 use Faker\Factory as Faker;
+use Spatie\Async\Pool;
+use Symfony\Component\Console\Helper\ProgressBar;
+use Symfony\Component\Console\Output\ConsoleOutput;
 use function Laravel\Prompts\select;
 use function Laravel\Prompts\text;
+use Spatie\Fork\Fork;
 
 class MassiveSeederCommand extends Command
 {
@@ -16,9 +20,11 @@ class MassiveSeederCommand extends Command
 
 	protected $description = 'Seed a database table with massive data';
 	private $values = [];
+	private $numTasks = 50;
 
 	public function handle()
 	{
+
 		if (app()->environment() !== 'production') {
 			$this->error('You are running this command in the production environment.');
 
@@ -73,24 +79,58 @@ class MassiveSeederCommand extends Command
 			validate: ['name' => 'required|max:1000000|integer'],
 		);
 
+		$start = microtime(true);
+
+		$iterations = intdiv($totalRecords, $batchSize);
+		$bar = $this->output->createProgressBar($iterations);
+		$tasks = [];
+
+		for ($i = 0; $i < $this->numTasks; $i++) {
+			$tasks[$i] = fn () => $this->processSeed($totalRecords/$this->numTasks, $batchSize/$this->numTasks, $connection, $table);
+		}
+		$bar->start();
+		$results = Fork::new()
+					   ->after(
+						   child: fn () => DB::connection($connection)->disconnect(),
+						   parent: fn (int $iterations) =>
+						   $bar->advance($iterations),
+					   )
+					   ->before(fn() => DB::connection($connection)->reconnect())
+					   ->concurrent($this->numTasks)
+					   ->run(...$tasks);
+
+		$end = microtime(true);
+
+
+		$this->line('');
+		// Display the memory usage
+		$this->info($this->displayMemoryUsage());
+		$this->info('Total Records Inserted: ' . number_format($totalRecords, 0, '', ','));
+		$this->info('Data seeded successfully!');
+
+		$executionTime = $end - $start;
+
+		$this->info('handle method execution time: ' . round($executionTime, 2) . ' seconds');
+
+		return 0;
+
+	}
+
+	public function processSeed($totalRecords, $batchSize, $connection, $table){
+
+		$start = microtime(true);
 		$iterations = intdiv($totalRecords, $batchSize);
 		$columnsAndTypes = $this->getColumnsAndTypes($connection, $table);
 		$faker = Faker::create();
-		$bar = $this->output->createProgressBar($iterations);
 
 		for ($i = 0; $i < $iterations; $i++) {
 			foreach ($this->generateDataBatch($batchSize, $columnsAndTypes, $faker) as $data) {
 				DB::connection($connection)->table($table)->insert($data);
 			}
-			$bar->advance();
 		}
 
-		$bar->finish();
-		$this->line('');
-		$this->info('Total Records Inserted: ' . number_format($totalRecords, 0, '', ','));
-		$this->info('Data seeded successfully!');
+		return microtime(true) - $start;
 
-		return 0;
 	}
 
 	public static function allTablesMySQL($connection = null)
