@@ -20,7 +20,16 @@ class MassiveSeederCommand extends Command
 
 	protected $description = 'Seed a database table with massive data';
 	private $values = [];
-	private $numTasks = 50;
+	private int $numTasks = 50;
+	private \Faker\Generator $faker;
+	private string|int $table;
+	private string|int $connection;
+
+	public function __construct()
+	{
+		parent::__construct();
+		$this->faker = Faker::create();
+	}
 
 	public function handle()
 	{
@@ -39,22 +48,22 @@ class MassiveSeederCommand extends Command
 			return in_array(config("database.connections.$connection.driver"), self::SUPPORTED_DRIVERS);
 		});
 
-		$connection = select(
+		$this->connection = select(
 			'Select the connection to use.',
 			array_values($connections)
 		);
 
-		$this->info('You selected: ' . $connection);
-		if (!in_array(config("database.connections.$connection.driver"), self::SUPPORTED_DRIVERS)) {
-			$this->error($connection . ' is not supported for this command.');
+		$this->info('You selected: ' . $this->connection);
+		if (!in_array(config("database.connections.$this->connection.driver"), self::SUPPORTED_DRIVERS)) {
+			$this->error($this->connection . ' is not supported for this command.');
 			return 1;
 		}
 
 		try {
-			match (config("database.connections.$connection.driver")) {
-				'mysql' => $tables = $this->allTablesMySQL($connection),
-				'sqlite' => $tables = $this->allTablesSqlite($connection),
-				'pgsql' => $tables = $this->allTablesPgsql($connection),
+			match (config("database.connections.$this->connection.driver")) {
+				'mysql' => $tables = $this->allTablesMySQL($this->connection),
+				'sqlite' => $tables = $this->allTablesSqlite($this->connection),
+				'pgsql' => $tables = $this->allTablesPgsql($this->connection),
 			};
 		} catch (\Exception $e) {
 			$this->error('An error occurred while fetching the tables: ' . $e->getMessage());
@@ -66,12 +75,12 @@ class MassiveSeederCommand extends Command
 			return 1;
 		}
 
-		$table = select(
+		$this->table = select(
 			'Select the table to seed.',
 			$tables
 		);
 
-		$this->info('You selected: ' . $table . ' table');
+		$this->info('You selected: ' . $this->table . ' table');
 
 		$batchSize = 1000;
 		$totalRecords = text(
@@ -81,21 +90,22 @@ class MassiveSeederCommand extends Command
 
 		$start = microtime(true);
 
+		$this->numTasks = 50;
 		$iterations = intdiv($totalRecords, $batchSize);
 		$bar = $this->output->createProgressBar($iterations);
 		$tasks = [];
 
 		for ($i = 0; $i < $this->numTasks; $i++) {
-			$tasks[$i] = fn () => $this->processSeed($totalRecords/$this->numTasks, $batchSize/$this->numTasks, $connection, $table);
+			$tasks[$i] = fn () => $this->processSeed($totalRecords/$this->numTasks, $batchSize/$this->numTasks,);
 		}
 		$bar->start();
 		$results = Fork::new()
 					   ->after(
-						   child: fn () => DB::connection($connection)->disconnect(),
-						   parent: fn (int $iterations) =>
-						   $bar->advance($iterations),
+						   child: fn () => DB::connection($this->connection)->disconnect(),
+						   parent: fn () =>
+						   $bar->advance(),
 					   )
-					   ->before(fn() => DB::connection($connection)->reconnect())
+					   ->before(fn() => DB::connection($this->connection)->reconnect())
 					   ->concurrent($this->numTasks)
 					   ->run(...$tasks);
 
@@ -116,19 +126,18 @@ class MassiveSeederCommand extends Command
 
 	}
 
-	public function processSeed($totalRecords, $batchSize, $connection, $table){
+	public function processSeed($totalRecords, $batchSize){
 
 		$start = microtime(true);
 		$iterations = intdiv($totalRecords, $batchSize);
-		$columnsAndTypes = $this->getColumnsAndTypes($connection, $table);
-		$faker = Faker::create();
+		$columnsAndTypes = $this->getColumnsAndTypes($this->connection, $this->table);
 
 		for ($i = 0; $i < $iterations; $i++) {
-			foreach ($this->generateDataBatch($batchSize, $columnsAndTypes, $faker) as $data) {
-				DB::connection($connection)->table($table)->insert($data);
+			foreach ($this->generateDataBatch($batchSize, $columnsAndTypes) as $data) {
+				DB::connection($this->connection)->table($this->table)->insert($data);
 			}
 		}
-
+		// $bar->finish();
 		return microtime(true) - $start;
 
 	}
@@ -166,7 +175,7 @@ class MassiveSeederCommand extends Command
 		return $tables;
 	}
 
-	private function generateDataBatch($batchSize, $columns, $faker)
+	private function generateDataBatch($batchSize, $columns)
 	{
 		for ($j = 0; $j < $batchSize; $j++) {
 			$data = [];
@@ -174,33 +183,33 @@ class MassiveSeederCommand extends Command
 			foreach ($columns as $column => $type) {
 				switch ($type) {
 					case 'name':
-						$data[$column] = $faker->name;
+						$data[$column] = $this->faker->name;
 						break;
 					case 'email':
-						$data[$column] = $faker->email;
+						$data[$column] = $this->faker->email;
 						break;
 					case 'address':
-						$data[$column] = $faker->address;
+						$data[$column] = $this->faker->address;
 						break;
 					case 'integer':
 					case 'int4':
 					case 'float4':
-						$data[$column] = $faker->randomNumber();
+						$data[$column] = $this->faker->randomNumber();
 						break;
 					case 'timestamp':
-						$data[$column] = $faker->dateTimeThisYear()->format('Y-m-d H:i:s');
+						$data[$column] = $this->faker->dateTimeThisYear()->format('Y-m-d H:i:s');
 						break;
 					case 'varchar':
-						$data[$column] = $faker->word;
+						$data[$column] = $this->faker->word;
 						break;
 					case 'text':
-						$data[$column] = $faker->text;
+						$data[$column] = $this->faker->text;
 						break;
 					case 'bool':
-						$data[$column] = $faker->boolean;
+						$data[$column] = $this->faker->boolean;
 						break;
 					default:
-						$data[$column] = $faker->word;
+						$data[$column] = $this->faker->word;
 				}
 			}
 
