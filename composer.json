@@ -19,7 +19,7 @@
         "fzaninotto/faker": "^1.5",
         "illuminate/console": "^11.7",
         "illuminate/support": "^9.0|^10.0|^11.0",
-        "laravel/prompts": "^0.1.21",
+        "laravel/prompts": "^0.2.0",
         "spatie/fork": "^1.2"
     },
     "require-dev": {
